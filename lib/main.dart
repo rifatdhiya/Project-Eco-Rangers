@@ -6,12 +6,13 @@ import 'package:flutter/material.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:geolocator/geolocator.dart';
 import 'package:http/http.dart' as http;
+import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 
 // ======================================================
 // GANTI IP di bawah ini dengan IP laptop/PC di jaringanmu
 // Contoh: http://192.168.0.109:8000
 // ======================================================
-const String baseUrl = 'http://192.168.0.109:8000';
+const String baseUrl = 'http://192.168.0.104:8000';
 Uri api(String path) => Uri.parse('$baseUrl$path');
 // Bangun URL gambar yang aman dipakai di HP (ganti host 127.0.0.1/localhost → baseUrl)
 String? imageUrlFrom(Map<String, dynamic> r) {
@@ -36,6 +37,84 @@ String? imageUrlFrom(Map<String, dynamic> r) {
   return null;
 }
 
+// ==================== AUTH SERVICE (Sanctum) ====================
+class AuthService {
+  AuthService._();
+  static final AuthService instance = AuthService._();
+  final FlutterSecureStorage _storage = const FlutterSecureStorage();
+
+  Future<Map<String, dynamic>> register({
+    required String username,
+    required String email,
+    required String password,
+  }) async {
+    final res = await http.post(
+      Uri.parse('$baseUrl/api/register'),
+      headers: {'Content-Type':'application/json','Accept':'application/json'},
+      body: jsonEncode({'username': username, 'email': email, 'password': password}),
+    );
+    final data = _decode(res.body);
+    if (res.statusCode >= 200 && res.statusCode < 300) {
+      await _storage.write(key: 'token', value: data['token']);
+      return data;
+    }
+    throw Exception(data['message'] ?? 'Register gagal');
+  }
+
+  Future<Map<String, dynamic>> login({
+    required String email,
+    required String password,
+  }) async {
+    final res = await http.post(
+      Uri.parse('$baseUrl/api/login'),
+      headers: {'Content-Type':'application/json','Accept':'application/json'},
+      body: jsonEncode({'email': email, 'password': password}),
+    );
+    final data = _decode(res.body);
+    if (res.statusCode >= 200 && res.statusCode < 300) {
+      await _storage.write(key: 'token', value: data['token']);
+      return data;
+    }
+    throw Exception(data['message'] ?? 'Login gagal');
+  }
+
+  Future<void> logout() async {
+    final t = await getToken();
+    if (t != null) {
+      await http.post(
+        Uri.parse('$baseUrl/api/logout'),
+        headers: {'Accept':'application/json','Authorization':'Bearer $t'},
+      );
+    }
+    await _storage.delete(key: 'token');
+  }
+
+  Future<String?> getToken() => _storage.read(key: 'token');
+
+  // Helper untuk GET/POST yang butuh token
+  Future<http.Response> authedGet(String path) async {
+    final t = await getToken();
+    return http.get(
+      Uri.parse('$baseUrl$path'),
+      headers: {'Accept':'application/json', if (t != null) 'Authorization':'Bearer $t'},
+    );
+  }
+
+  Future<http.Response> authedPost(String path, Map<String, dynamic> body) async {
+    final t = await getToken();
+    return http.post(
+      Uri.parse('$baseUrl$path'),
+      headers: {'Content-Type':'application/json','Accept':'application/json', if (t != null) 'Authorization':'Bearer $t'},
+      body: jsonEncode(body),
+    );
+  }
+}
+
+Map<String, dynamic> _decode(String body) {
+  try { return jsonDecode(body) as Map<String, dynamic>; }
+  catch (_) { return {'message': body}; }
+}
+
 
 void main() {
   WidgetsFlutterBinding.ensureInitialized();
@@ -45,9 +124,13 @@ void main() {
 /// ======= Client API sederhana
 class ApiClient {
   Future<List<dynamic>> getReports() async {
+    final t = await AuthService.instance.getToken();
     final res = await http.get(
       api('/api/reports'),
-      headers: {'Accept': 'application/json'},
+      headers: {
+        'Accept': 'application/json',
+        if (t != null) 'Authorization': 'Bearer $t',
+      },
     );
     if (res.statusCode != 200) {
       throw Exception('GET /api/reports gagal: ${res.statusCode} ${res.body}');
@@ -65,6 +148,7 @@ class ApiClient {
   }) async {
     final req = http.MultipartRequest('POST', api('/api/reports'))
       ..headers['Accept'] = 'application/json'
+      ..headers['Authorization'] = 'Bearer ' + ((await AuthService.instance.getToken()) ?? '')
       ..fields.addAll({
         'judul': judul,
         'deskripsi': deskripsi,
@@ -113,9 +197,13 @@ class ApiClient {
 
   /// Ubah status laporan (Pending/Diproses/Selesai)
   Future<Map<String, dynamic>> updateStatus(int id, String status) async {
+    final t = await AuthService.instance.getToken();
     final res = await http.patch(
       api('/api/reports/$id/status'),
-      headers: {'Accept': 'application/json'},
+      headers: {
+        'Accept': 'application/json',
+        if (t != null) 'Authorization': 'Bearer $t',
+      },
       body: {'status': status},
     );
     if (res.statusCode != 200) {
@@ -126,7 +214,14 @@ class ApiClient {
 
   /// Hapus laporan
   Future<void> deleteReport(int id) async {
-    final res = await http.delete(api('/api/reports/$id'));
+    final t = await AuthService.instance.getToken();
+    final res = await http.delete(
+      api('/api/reports/$id'),
+      headers: {
+        'Accept': 'application/json',
+        if (t != null) 'Authorization': 'Bearer $t',
+      },
+    );
     if (res.statusCode != 200) {
       throw Exception('DELETE gagal: ${res.statusCode} ${res.body}');
     }
@@ -258,7 +353,7 @@ class LoginSelectionPage extends StatelessWidget {
               onPressed: () {
                 Navigator.push(
                   context,
-                  MaterialPageRoute(builder: (_) => const UserLoginPage()),
+                  MaterialPageRoute(builder: (_) => const AuthPage()),
                 );
               },
               child: const Text(
@@ -287,6 +382,104 @@ class LoginSelectionPage extends StatelessWidget {
   }
 }
 
+
+// ==================== AUTH PAGE (Login & Register) ====================
+class AuthPage extends StatefulWidget {
+  const AuthPage({super.key});
+  @override
+  State<AuthPage> createState() => _AuthPageState();
+}
+class _AuthPageState extends State<AuthPage> {
+  final _formKey = GlobalKey<FormState>();
+  final _username = TextEditingController();
+  final _email = TextEditingController();
+  final _password = TextEditingController();
+  bool _isRegister = false;
+  bool _loading = false;
+
+  @override
+  void dispose() {
+    _username.dispose();
+    _email.dispose();
+    _password.dispose();
+    super.dispose();
+  }
+
+  Future<void> _submit() async {
+    if (!_formKey.currentState!.validate()) return;
+    setState(() => _loading = true);
+    try {
+      if (_isRegister) {
+        await AuthService.instance.register(
+          username: _username.text.trim(),
+          email: _email.text.trim(),
+          password: _password.text,
+        );
+      } else {
+        await AuthService.instance.login(
+          email: _email.text.trim(),
+          password: _password.text,
+        );
+      }
+      if (!mounted) return;
+      Navigator.pushReplacement(
+        context,
+        MaterialPageRoute(builder: (_) => const DashboardUserPage()),
+      );
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text(e.toString().replaceFirst('Exception: ', ''))),
+      );
+    } finally {
+      if (mounted) setState(() => _loading = false);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(title: Text(_isRegister ? 'Register' : 'Login'), backgroundColor: Colors.green),
+      body: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Form(
+          key: _formKey,
+          child: Column(
+            children: [
+              if (_isRegister)
+                TextFormField(
+                  controller: _username,
+                  decoration: const InputDecoration(labelText: 'Username'),
+                  validator: (v) => (v==null || v.trim().length<3) ? 'Minimal 3 karakter' : null,
+                ),
+              TextFormField(
+                controller: _email,
+                decoration: const InputDecoration(labelText: 'Email'),
+                keyboardType: TextInputType.emailAddress,
+                validator: (v) => (v==null || !v.contains('@')) ? 'Email tidak valid' : null,
+              ),
+              TextFormField(
+                controller: _password,
+                decoration: const InputDecoration(labelText: 'Password'),
+                obscureText: true,
+                validator: (v) => (v==null || v.length<8) ? 'Minimal 8 karakter' : null,
+              ),
+              const SizedBox(height: 16),
+              ElevatedButton(
+                onPressed: _loading ? null : _submit,
+                child: Text(_loading ? 'Mohon tunggu...' : (_isRegister ? 'Daftar' : 'Masuk')),
+              ),
+              TextButton(
+                onPressed: _loading ? null : () => setState(() => _isRegister = !_isRegister),
+                child: Text(_isRegister ? 'Sudah punya akun? Login' : 'Belum punya akun? Register'),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
 // ==================== USER LOGIN ====================
 class UserLoginPage extends StatefulWidget {
   const UserLoginPage({super.key});
