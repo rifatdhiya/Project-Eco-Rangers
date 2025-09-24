@@ -1,14 +1,26 @@
-# Flutter/Dart
+# ---- Flutter / Dart ----
 .dart_tool/
 build/
 *.apk
 *.aab
 
-# Android/iOS
-android/.gradle/
+# ---- Android ----
+android/.gradle/                 # cache boleh di-ignore
+# Pastikan file penting Android TETAP di-track:
+!android/gradlew
+!android/gradlew.bat
+!android/gradle/wrapper/
+!android/gradle/wrapper/gradle-wrapper.jar
+!android/build.gradle
+!android/settings.gradle
+!android/gradle.properties
+!android/app/src/main/**         # Java/Kotlin, AndroidManifest, res
+!android/app/build.gradle
+
+# ---- iOS ----
 ios/Pods/
 
-# Laravel/Node
+# ---- Laravel / Node ----
 vendor/
 node_modules/
 public/storage/
@@ -16,7 +28,10 @@ storage/*.key
 .env
 .env.*.backup
 
-# Umum
+# ---- OS / Editor ----
 *.log
 .DS_Store
 Thumbs.db
+.idea/
+*.iml
+.flutter-plugins-dependencies
